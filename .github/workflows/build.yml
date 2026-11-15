@@ -12,10 +12,6 @@ on:
         type: boolean
         default: false
 
-env:
-  # Zero warnings is a merge requirement: every job fails on any rustc or clippy warning.
-  RUSTFLAGS: -D warnings
-
 jobs:
   # Job names are the required status checks of the `main` ruleset: renaming one
   # means updating the ruleset.
@@ -31,6 +27,9 @@ jobs:
   # Everything that does not need the WDK: lints and tests of opticdrv-core.
   core:
     runs-on: ubuntu-latest
+    # Zero warnings is a merge requirement.
+    env:
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -45,6 +44,10 @@ jobs:
     env:
       TARGET: x86_64-pc-windows-msvc
       WDK_VERSION: 10.0.26100
+      # Zero warnings is a merge requirement. RUSTFLAGS replaces (not merges
+      # with) .cargo/config.toml rustflags, so the static CRT wdk-build
+      # requires must ride along here too (same as upstream's build).
+      RUSTFLAGS: -D warnings -C target-feature=+crt-static
     steps:
       - uses: actions/checkout@v4
 
