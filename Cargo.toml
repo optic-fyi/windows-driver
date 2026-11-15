@@ -1,3 +1,20 @@
+[workspace]
+members = [".", "crates/opticdrv-core"]
+# Plain `cargo test`/`clippy` on any host only touches the portable crate; the
+# driver itself needs the WDK and is built with `-p opticdrv` on Windows.
+default-members = ["crates/opticdrv-core"]
+resolver = "3"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+
 [package]
 name = "opticdrv"
 version = "0.1.0"
@@ -22,9 +39,7 @@ wdk = "0.5.0"
 wdk-alloc = "0.4.2"
 wdk-panic = "0.5.0"
 wdk-sys = "0.5.2"
-
-[dev-dependencies]
-wdk-sys = { version = "0.5.2", features = ["test-stubs"] }
+opticdrv-core = { path = "crates/opticdrv-core" }
 
 [profile.dev]
 panic = "abort"
@@ -33,5 +48,5 @@ panic = "abort"
 lto = true
 panic = "abort"
 
-[lints.rust]
-unsafe_op_in_unsafe_fn = "forbid"
+[lints]
+workspace = true

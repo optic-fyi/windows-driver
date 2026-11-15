@@ -7,14 +7,46 @@ It currently enforces nothing. It loads, creates `\\.\OpticDrv` (SYSTEM and Admi
 - The service calls `DeviceIoControl(IOCTL_OPTIC_HEARTBEAT = 0x226000)` at least every 10 s with no input and a 16 byte output (`HeartbeatReply { sequence: u64, missed: u64 }`, see `src/ioctl.rs`).
 - A WDF timer fires every 10 s and logs through `DbgPrint` whether a ping arrived (`opticdrv: heartbeat #N: service alive|MISSED`).
 
-## Build
+## Layout
 
-Needs Rust stable (`x86_64-pc-windows-msvc`), LLVM/clang, and the Windows SDK + WDK 10.0.26100. See `.github/workflows/build.yml`.
+| Path | What |
+|---|---|
+| `crates/opticdrv-core` | `no_std`, WDK-free logic: IOCTL numbers, wire format, heartbeat counters. Fully tested on any host. |
+| `src/lib.rs` (`opticdrv`) | Thin KMDF shell: device, symlink, queue, timer. Only calls into core. No logic worth testing lives here. |
+| `crates/opticdrv-core/tests/protocol_golden.rs` | Pins the service <-> driver wire contract. |
+
+Rule of thumb: if it can be written without `wdk_sys`, it belongs in `opticdrv-core` with a test.
+
+## Develop
+
+Any OS, no WDK needed (this is what the `fmt` and `core` CI checks run):
 
 ```
-cargo build --release --target x86_64-pc-windows-msvc
+cargo fmt --all --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+Windows only, needs Rust (`x86_64-pc-windows-msvc`), LLVM/clang and the Windows SDK + WDK 10.0.26100 (see the `driver` job in `.github/workflows/build.yml`):
+
+```
+cargo build -p opticdrv --release --target x86_64-pc-windows-msvc
 copy target\x86_64-pc-windows-msvc\release\opticdrv.dll opticdrv.sys
 ```
+
+The CRT is linked statically (`.cargo/config.toml`), which `wdk-build` requires.
+
+### Tests
+
+Every test has a comment directly above it stating the bug it catches. Unit tests sit next to the code, `tests/` holds the golden wire contract and `proptest` property tests of the heartbeat. A change to `protocol_golden.rs` is a breaking protocol change for the service: do it on purpose.
+
+### Changing the IOCTL protocol
+
+Edit `crates/opticdrv-core/src/ioctl.rs`, update the golden test and this README, then update the service in the monorepo in the same release window.
+
+### Workflow
+
+`main` is protected by a ruleset: every change goes through a pull request, and the `fmt`, `core` and `driver` checks must pass. Dependabot proposes cargo and Actions updates weekly (the `wdk*` crates are grouped, bump them together and expect bindings changes).
 
 ## Releasing
 

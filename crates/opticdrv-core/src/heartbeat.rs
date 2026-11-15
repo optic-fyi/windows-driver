@@ -12,9 +12,17 @@ use crate::ioctl::HeartbeatReply;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tick {
     /// At least one ping arrived during the interval.
-    ServiceAlive { sequence: u64 },
+    ServiceAlive {
+        /// Watchdog tick number that closed this interval.
+        sequence: u64,
+    },
     /// No ping arrived during the interval.
-    ServiceMissed { sequence: u64, missed_total: u64 },
+    ServiceMissed {
+        /// Watchdog tick number that closed this interval.
+        sequence: u64,
+        /// Intervals without a ping since the driver loaded, including this one.
+        missed_total: u64,
+    },
 }
 
 /// Lock-free counters shared by the IOCTL path and the timer path.
