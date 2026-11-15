@@ -18,7 +18,7 @@ copy target\x86_64-pc-windows-msvc\release\opticdrv.dll opticdrv.sys
 
 ## Releasing
 
-Run the **Release** workflow (`workflow_dispatch`, main only). It builds, signs with the fixed test certificate (fails if the secrets are missing) and publishes a release `v<version>-<sha7>` with `opticdrv.sys`, `opticdrv.sys.sha256` and `optic-driver-test.cer`. The monorepo's Windows app build downloads the **latest** release, verifies the hash and embeds the driver, so protect `main` and bump `version` in `Cargo.toml` as needed.
+Run the **Release** workflow (`workflow_dispatch`, main only). It builds, signs with the fixed test certificate (fails if the secrets are missing) and publishes a release `v<version>-<first 12 hex of the sha256>` with `opticdrv.sys`, `opticdrv.sys.sha256` and `optic-driver-test.cer`. The release notes contain the full SHA-256 and the `gh secret set OPTIC_DRIVER_SHA256 ...` command that makes the monorepo's Windows app build use that release. The monorepo never takes "latest": it only uses the release whose hash is in that secret, so publishing a release changes nothing until the secret is updated.
 
 ## Signing (test certificate)
 

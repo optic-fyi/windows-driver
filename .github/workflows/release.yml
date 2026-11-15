@@ -41,10 +41,30 @@ jobs:
         run: |
           set -euo pipefail
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          tag="v${version}-${GITHUB_SHA::7}"
           (cd dist && sha256sum opticdrv.sys > opticdrv.sys.sha256)
-          cat dist/opticdrv.sys.sha256
+          hash=$(cut -d' ' -f1 dist/opticdrv.sys.sha256)
+          # The monorepo finds its pinned release by this 12 hex suffix, then checks the full hash.
+          tag="v${version}-${hash::12}"
+          cat > notes.md <<EOF
+          ## Pin this driver in the monorepo
+
+          SHA-256 of \`opticdrv.sys\` (built from ${GITHUB_SHA}):
+
+          \`\`\`
+          ${hash}
+          \`\`\`
+
+          To make the Windows app build use this release:
+
+          \`\`\`
+          gh secret set OPTIC_DRIVER_SHA256 --repo optic-fyi/monorepo --body ${hash}
+          \`\`\`
+
+          Signed with the Optic test certificate (public part: \`optic-driver-test.cer\`).
+
+          EOF
           gh release create "$tag" dist/opticdrv.sys dist/opticdrv.sys.sha256 dist/optic-driver-test.cer \
             --target "$GITHUB_SHA" \
             --title "opticdrv $tag" \
-            --notes "Driver built from ${GITHUB_SHA}, signed with the Optic test certificate (public part: optic-driver-test.cer, \`sha256sum -c opticdrv.sys.sha256\` to verify)."
+            --notes-file notes.md \
+            --generate-notes
