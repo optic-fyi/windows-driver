@@ -294,7 +294,7 @@ fn create_control_device(driver: WDFDRIVER) -> Result<(), NTSTATUS> {
     let mut timer_config = WDF_TIMER_CONFIG {
         Size: wdf_struct_size::<WDF_TIMER_CONFIG>(),
         EvtTimerFunc: Some(evt_watchdog_timer),
-        Period: HEARTBEAT_INTERVAL_MS,
+        Period: 0,
         AutomaticSerialization: 0,
         ..WDF_TIMER_CONFIG::default()
     };
@@ -311,11 +311,10 @@ fn create_control_device(driver: WDFDRIVER) -> Result<(), NTSTATUS> {
         )
     })?;
 
-    // Relative due time: negative, in 100 ns units.
-    let due_time = -i64::from(HEARTBEAT_INTERVAL_MS) * 10_000;
     // SAFETY: `timer` was just created. A fresh timer is never already
     // running; the return only matters when restarting a live timer.
-    let _was_running = unsafe { call_unsafe_wdf_function_binding!(WdfTimerStart, timer, due_time) };
+    let _was_running =
+        unsafe { call_unsafe_wdf_function_binding!(WdfTimerStart, timer, watchdog_due_time()) };
 
     // SAFETY: `device` is fully configured; this opens it to I/O.
     unsafe {
@@ -326,7 +325,7 @@ fn create_control_device(driver: WDFDRIVER) -> Result<(), NTSTATUS> {
 
 /// Watchdog: once per interval, checks whether the service pinged. On the
 /// threshold-crossing tick the outage is persisted and reported.
-extern "C" fn evt_watchdog_timer(_timer: WDFTIMER) {
+extern "C" fn evt_watchdog_timer(timer: WDFTIMER) {
     match HEARTBEAT.tick() {
         Tick::ServiceAlive { sequence } => {
             println!("opticdrv: heartbeat #{sequence}: service alive");
@@ -351,6 +350,16 @@ extern "C" fn evt_watchdog_timer(_timer: WDFTIMER) {
             write_service_unreachable_event(u32::try_from(sequence).unwrap_or(u32::MAX));
         }
     }
+    // One-shot re-arm: a passive-level timer cannot be periodic (the framework
+    // rejects it with STATUS_NOT_SUPPORTED, StartService error 50).
+    // SAFETY: `timer` is the live timer this callback was invoked for.
+    let _was_running =
+        unsafe { call_unsafe_wdf_function_binding!(WdfTimerStart, timer, watchdog_due_time()) };
+}
+
+/// Relative due time of the next watchdog tick: negative, in 100 ns units.
+fn watchdog_due_time() -> i64 {
+    -i64::from(HEARTBEAT_INTERVAL_MS) * 10_000
 }
 
 /// Handles the service IOCTLs. The caller is verified first: anything but
