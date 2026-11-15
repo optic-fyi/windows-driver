@@ -16,22 +16,32 @@ jobs:
     runs-on: windows-2025
     env:
       TARGET: x86_64-pc-windows-msvc
-      WDK_VERSION: 10.0.22621
+      WDK_VERSION: 10.0.26100
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Windows SDK and WDK
+      # wdk-build uses the NEWEST Windows Kit under Include\, and the runner image already
+      # ships SDK 10.0.26100 without the WDK, so the WDK must be 26100 too (22621 was ignored).
+      - name: Install WDK
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # 22621's SDK installer overflows the log path winget appends; '/q' avoids that.
-          winget install --id "Microsoft.WindowsSDK.$env:WDK_VERSION" --exact --silent --accept-package-agreements --accept-source-agreements --override '/q'
-          winget install --id "Microsoft.WindowsWDK.$env:WDK_VERSION" --exact --silent --accept-package-agreements --accept-source-agreements
+          $crt = "${env:ProgramFiles(x86)}\Windows Kits\10\Include\$env:WDK_VERSION.0\km\crt"
+          if (-not (Test-Path $crt)) {
+            winget install --id "Microsoft.WindowsWDK.$env:WDK_VERSION" --exact --silent --accept-package-agreements --accept-source-agreements
+          }
+          if (-not (Test-Path $crt)) { throw "WDK $env:WDK_VERSION not installed: $crt is missing" }
+          Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include" | Select-Object -ExpandProperty Name
           clang --version
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ env.TARGET }}
+
+      # Caches ~/.cargo and target/ (including the slow wdk-sys bindgen output).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.TARGET }}-wdk-${{ env.WDK_VERSION }}
 
       - name: Test
         run: cargo test --locked

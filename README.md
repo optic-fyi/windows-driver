@@ -9,7 +9,7 @@ It currently enforces nothing. It loads, creates `\\.\OpticDrv` (SYSTEM and Admi
 
 ## Build
 
-Needs Rust stable (`x86_64-pc-windows-msvc`), LLVM/clang, and the Windows SDK + WDK 10.0.22621. See `.github/workflows/build.yml`.
+Needs Rust stable (`x86_64-pc-windows-msvc`), LLVM/clang, and the Windows SDK + WDK 10.0.26100. See `.github/workflows/build.yml`.
 
 ```
 cargo build --release --target x86_64-pc-windows-msvc
