@@ -416,22 +416,19 @@ unsafe fn image_path_matches(name: PUNICODE_STRING) -> bool {
     }
     // SAFETY: `name` is non-null and valid by contract.
     let length = unsafe { (*name).Length as usize / size_of::<u16>() };
-    // SAFETY: same as above; the buffer is read next, bounds-checked.
+    // SAFETY: same as above.
     let buffer = unsafe { (*name).Buffer };
     if buffer.is_null() || length < SERVICE_IMAGE_SUFFIX.len() {
         return false;
     }
+    // SAFETY: a `UNICODE_STRING` buffer is valid for `Length` bytes (`length`
+    // u16 units) by contract, and `buffer` was checked non-null above.
+    let units = unsafe { core::slice::from_raw_parts(buffer, length) };
     let suffix = SERVICE_IMAGE_SUFFIX.as_bytes();
-    let mut i = 0;
-    while i < suffix.len() {
-        // SAFETY: `length - suffix.len() + i < length`, inside the buffer.
-        let unit = unsafe { *buffer.add(length - suffix.len() + i) };
-        if unit >= 0x80 || unit.to_le_bytes()[0].to_ascii_lowercase() != suffix[i] {
-            return false;
-        }
-        i += 1;
-    }
-    true
+    units[length - suffix.len()..]
+        .iter()
+        .zip(suffix)
+        .all(|(&unit, &want)| u8::try_from(unit).is_ok_and(|b| b.to_ascii_lowercase() == want))
 }
 
 /// Reads the persisted threshold-crossing count from the driver's
