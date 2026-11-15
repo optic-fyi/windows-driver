@@ -53,6 +53,18 @@ jobs:
 
       # wdk-build uses the NEWEST Windows Kit under Include\, and the runner image already
       # ships SDK 10.0.26100 without the WDK, so the WDK must be 26100 too (22621 was ignored).
+      # Only the WDK-owned directories (the SDK ships with the image). A hit skips the
+      # winget download/install below; a miss installs and saves them for next time.
+      - name: Cache WDK
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\Program Files (x86)\Windows Kits\10\Include\${{ env.WDK_VERSION }}.0\km
+            C:\Program Files (x86)\Windows Kits\10\Include\wdf
+            C:\Program Files (x86)\Windows Kits\10\Lib\${{ env.WDK_VERSION }}.0\km
+            C:\Program Files (x86)\Windows Kits\10\Lib\wdf
+          key: wdk-${{ env.WDK_VERSION }}-${{ runner.os }}
+
       - name: Install WDK
         shell: pwsh
         run: |
@@ -73,6 +85,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ env.TARGET }}-wdk-${{ env.WDK_VERSION }}
+          # Save even when a later step fails, so the slow wdk-sys bindgen output survives
+          # a lint/compile fix and is not rebuilt on every retry.
+          cache-on-failure: true
 
       - name: Clippy
         run: cargo clippy -p opticdrv --locked --target ${{ env.TARGET }} -- -D warnings
