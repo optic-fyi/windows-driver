@@ -18,7 +18,7 @@ jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -31,7 +31,7 @@ jobs:
     env:
       RUSTFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -49,7 +49,7 @@ jobs:
       # requires must ride along here too (same as upstream's build).
       RUSTFLAGS: -D warnings -C target-feature=+crt-static
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # wdk-build uses the NEWEST Windows Kit under Include\, and the runner image already
       # ships SDK 10.0.26100 without the WDK, so the WDK must be 26100 too (22621 was ignored).
@@ -110,7 +110,7 @@ jobs:
           $expected = (New-Object Security.Cryptography.X509Certificates.X509Certificate2 (Resolve-Path optic-driver-test.cer)).Thumbprint
           if ($sig.SignerCertificate.Thumbprint -ne $expected) { throw "Signed with unexpected certificate $($sig.SignerCertificate.Thumbprint)" }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: opticdrv
           path: dist/
