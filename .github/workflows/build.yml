@@ -103,7 +103,7 @@ jobs:
           $expected = (New-Object Security.Cryptography.X509Certificates.X509Certificate2 (Resolve-Path optic-driver-test.cer)).Thumbprint
           if ($sig.SignerCertificate.Thumbprint -ne $expected) { throw "Signed with unexpected certificate $($sig.SignerCertificate.Thumbprint)" }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: opticdrv
           path: dist/
