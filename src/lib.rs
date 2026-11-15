@@ -367,8 +367,9 @@ fn verify_caller(request: WDFREQUEST) -> bool {
     let pid: u32 =
         unsafe { call_unsafe_wdf_function_binding!(WdfRequestGetRequestorProcessId, request) };
     let mut process: PEPROCESS = core::ptr::null_mut();
+    let pid_handle: HANDLE = pid as HANDLE;
     // SAFETY: `pid` came from WDF; on success we own one reference, released below.
-    let status = unsafe { PsLookupProcessByProcessId(pid as HANDLE, &mut process) };
+    let status = unsafe { PsLookupProcessByProcessId(pid_handle, &mut process) };
     if !wdk::nt_success(status) || process.is_null() {
         return false;
     }
@@ -498,8 +499,10 @@ fn write_service_unreachable_event(unique: u32) {
     if size > u8::MAX as usize {
         return;
     }
+    let size_u8 = size as u8;
+    let driver_ptr: PVOID = driver.cast();
     // SAFETY: the driver object is valid for driver lifetime; the size fits `UCHAR`.
-    let entry = unsafe { IoAllocateErrorLogEntry(driver.cast(), size as u8) };
+    let entry = unsafe { IoAllocateErrorLogEntry(driver_ptr, size_u8) };
     if entry.is_null() {
         return;
     }
