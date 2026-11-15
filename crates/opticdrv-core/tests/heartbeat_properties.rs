@@ -1,7 +1,7 @@
 //! Property tests: the heartbeat counters obey their invariants under any
 //! interleaving of pings and watchdog ticks.
 
-use opticdrv_core::heartbeat::{Heartbeat, Tick};
+use opticdrv_core::heartbeat::{Heartbeat, MISSED_THRESHOLD, Tick};
 use proptest::prelude::*;
 
 #[derive(Clone, Copy, Debug)]
@@ -31,6 +31,31 @@ proptest! {
                 }
             }
         }
+    }
+
+    // If this fails: threshold crossings fire more than once per outage, so the
+    // tamper count over-reports and the driver spams the event log.
+    #[test]
+    fn threshold_crossings_are_bounded_by_miss_runs(events in events()) {
+        use Event::{Ping, Tick as TickEvent};
+        let hb = Heartbeat::new();
+        let (mut crossings, mut ticks) = (0u32, 0u32);
+        for event in events {
+            match event {
+                Ping => {
+                    hb.record_ping();
+                }
+                TickEvent => {
+                    ticks += 1;
+                    if matches!(hb.tick(), Tick::ThresholdCrossed { .. }) {
+                        crossings += 1;
+                    }
+                }
+            }
+        }
+        // Each crossing consumes at least MISSED_THRESHOLD miss ticks.
+        prop_assert!(crossings * MISSED_THRESHOLD <= ticks);
+        prop_assert_eq!(crossings, hb.status().tamper_events);
     }
 
     // If this fails: the sequence or missed counters drift, so replies sent to

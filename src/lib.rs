@@ -1,12 +1,22 @@
 //! # opticdrv
 //!
-//! Non-PnP KMDF driver that exposes `\\.\OpticDrv` and keeps a 10 second
-//! heartbeat with the Optic user-mode service:
+//! Non-PnP KMDF driver that exposes `\\.\OpticDrv` and supervises the
+//! Optic user-mode service:
 //!
-//! * the service sends [`ioctl::IOCTL_OPTIC_HEARTBEAT`] at least every 10 s;
-//! * a periodic WDF timer fires every 10 s and logs whether a ping arrived.
+//! * the service pings [`IOCTL_OPTIC_HEARTBEAT`][hb] at least every 10 s and
+//!   queries [`IOCTL_OPTIC_DRIVER_STATUS`][st] for supervision counters;
+//! * a periodic WDF timer fires every 10 s; three consecutive misses persist
+//!   a tamper record and write an event-log entry.
 //!
-//! It enforces nothing yet.
+//! [hb]: opticdrv_core::ioctl::IOCTL_OPTIC_HEARTBEAT
+//! [st]: opticdrv_core::ioctl::IOCTL_OPTIC_DRIVER_STATUS
+//!
+//! Only the service may talk to the device: the device ACL admits
+//! `LocalSystem` and Administrators, and every request is additionally
+//! checked for a session-0 caller named `optic.exe`.
+//!
+//! Design notes, including what this driver deliberately does NOT do, live in
+//! `README.md` ("Supervision design").
 
 #![no_std]
 
@@ -14,21 +24,32 @@ extern crate alloc;
 
 extern crate wdk_panic;
 
-use core::mem::size_of;
+use core::{
+    mem::size_of,
+    sync::atomic::{AtomicPtr, Ordering},
+};
 
 use opticdrv_core::{
     heartbeat::{Heartbeat, Tick},
-    ioctl::{HEARTBEAT_INTERVAL_MS, HeartbeatReply, IOCTL_OPTIC_HEARTBEAT},
+    ioctl::{
+        DriverStatus, HEARTBEAT_INTERVAL_MS, HeartbeatReply, IOCTL_OPTIC_DRIVER_STATUS,
+        IOCTL_OPTIC_HEARTBEAT,
+    },
     wide::ascii_to_utf16,
 };
 use wdk::println;
 use wdk_alloc::WdkAllocator;
 use wdk_sys::{
     _WDF_DRIVER_INIT_FLAGS, _WDF_EXECUTION_LEVEL, _WDF_IO_QUEUE_DISPATCH_TYPE,
-    _WDF_SYNCHRONIZATION_SCOPE, _WDF_TRI_STATE, DRIVER_OBJECT, NTSTATUS, PCUNICODE_STRING, PVOID,
-    ULONG, UNICODE_STRING, WDF_DRIVER_CONFIG, WDF_IO_QUEUE_CONFIG, WDF_NO_HANDLE,
-    WDF_NO_OBJECT_ATTRIBUTES, WDF_OBJECT_ATTRIBUTES, WDF_TIMER_CONFIG, WDFDEVICE, WDFDRIVER,
-    WDFOBJECT, WDFQUEUE, WDFREQUEST, WDFTIMER, call_unsafe_wdf_function_binding,
+    _WDF_SYNCHRONIZATION_SCOPE, _WDF_TRI_STATE, DRIVER_OBJECT, HANDLE, IO_ERROR_LOG_PACKET,
+    KEY_READ, KEY_WRITE, NTSTATUS, PCUNICODE_STRING, PEPROCESS, PVOID, ULONG, UNICODE_STRING,
+    WDF_DRIVER_CONFIG, WDF_IO_QUEUE_CONFIG, WDF_NO_HANDLE, WDF_NO_OBJECT_ATTRIBUTES,
+    WDF_OBJECT_ATTRIBUTES, WDF_TIMER_CONFIG, WDFDEVICE, WDFDRIVER, WDFKEY, WDFOBJECT, WDFQUEUE,
+    WDFREQUEST, WDFTIMER, call_unsafe_wdf_function_binding,
+    ntddk::{
+        IoAllocateErrorLogEntry, IoWriteErrorLogEntry, ObfDereferenceObject,
+        PsGetProcessImageFileName, PsGetProcessSessionId, PsLookupProcessByProcessId,
+    },
 };
 
 #[global_allocator]
@@ -37,11 +58,29 @@ static GLOBAL_ALLOCATOR: WdkAllocator = WdkAllocator;
 /// Shared by the IOCTL path and the watchdog timer.
 static HEARTBEAT: Heartbeat = Heartbeat::new();
 
+/// The `DRIVER_OBJECT` from entry, for error-log entries. Written once at
+/// entry, before any IOCTL or timer can run; valid for driver lifetime.
+static DRIVER_OBJECT_PTR: AtomicPtr<DRIVER_OBJECT> = AtomicPtr::new(core::ptr::null_mut());
+
+/// The `WDFDRIVER` handle, for registry access from the timer path. Written
+/// once at entry; valid for driver lifetime.
+static WDF_DRIVER_HANDLE: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(core::ptr::null_mut());
+
 const STATUS_SUCCESS: NTSTATUS = 0;
 /// `0xC0000010` as a signed `NTSTATUS`.
 const STATUS_INVALID_DEVICE_REQUEST: NTSTATUS = -1_073_741_808;
+/// `0xC0000022` as a signed `NTSTATUS`.
+const STATUS_ACCESS_DENIED: NTSTATUS = -1_073_741_790;
 /// `FILE_DEVICE_SECURE_OPEN`.
 const FILE_DEVICE_SECURE_OPEN: ULONG = 0x0000_0100;
+
+/// Driver-specific event code logged when the service goes unreachable.
+/// Visible in Event Viewer under the `opticdrv` source.
+const OPTIC_EVENT_SERVICE_UNREACHABLE: NTSTATUS = 0x0000_1001;
+
+/// Short image name the service runs under. `PsGetProcessImageFileName`
+/// returns at most 15 ASCII chars plus NUL, so this must stay short.
+const SERVICE_IMAGE_NAME: &[u8; 9] = b"optic.exe";
 
 /// Declares `static $name: [u16; _]` holding `$text` as UTF-16 (no terminator).
 macro_rules! wide {
@@ -52,6 +91,7 @@ macro_rules! wide {
 
 wide!(DEVICE_NAME, "\\Device\\OpticDrv");
 wide!(SYMLINK_NAME, "\\DosDevices\\OpticDrv");
+wide!(REG_TAMPER_EVENTS, "TamperEvents");
 // SYSTEM and Administrators only: the service runs as LocalSystem.
 wide!(DEVICE_SDDL, "D:P(A;;GA;;;SY)(A;;GA;;;BA)");
 
@@ -89,6 +129,7 @@ pub unsafe extern "system" fn driver_entry(
     driver: &mut DRIVER_OBJECT,
     registry_path: PCUNICODE_STRING,
 ) -> NTSTATUS {
+    DRIVER_OBJECT_PTR.store(driver as *mut DRIVER_OBJECT, Ordering::Release);
     let mut config = WDF_DRIVER_CONFIG {
         Size: size_of::<WDF_DRIVER_CONFIG>() as ULONG,
         DriverInitFlags: _WDF_DRIVER_INIT_FLAGS::WdfDriverInitNonPnpDriver as ULONG,
@@ -112,6 +153,10 @@ pub unsafe extern "system" fn driver_entry(
         println!("opticdrv: WdfDriverCreate failed: {status:#x}");
         return status;
     }
+    WDF_DRIVER_HANDLE.store(wdf_driver.cast(), Ordering::Release);
+
+    // Best-effort: a missing key just means no outage was ever recorded.
+    HEARTBEAT.seed_tamper_events(read_tamper_events(wdf_driver));
 
     match create_control_device(wdf_driver) {
         Ok(()) => {
@@ -233,7 +278,8 @@ fn create_control_device(driver: WDFDRIVER) -> Result<(), NTSTATUS> {
     Ok(())
 }
 
-/// Watchdog: once per interval, logs whether the service pinged.
+/// Watchdog: once per interval, checks whether the service pinged. On the
+/// threshold-crossing tick the outage is persisted and reported.
 extern "C" fn evt_watchdog_timer(_timer: WDFTIMER) {
     match HEARTBEAT.tick() {
         Tick::ServiceAlive { sequence } => {
@@ -245,10 +291,23 @@ extern "C" fn evt_watchdog_timer(_timer: WDFTIMER) {
         } => {
             println!("opticdrv: heartbeat #{sequence}: service MISSED ({missed_total} total)");
         }
+        Tick::ThresholdCrossed {
+            sequence,
+            missed_total,
+            tamper_events,
+        } => {
+            println!(
+                "opticdrv: heartbeat #{sequence}: service UNREACHABLE                  ({missed_total} misses, tamper record #{tamper_events})"
+            );
+            persist_tamper_events(tamper_events);
+            write_service_unreachable_event(sequence as u32);
+        }
     }
 }
 
-/// Handles `IOCTL_OPTIC_HEARTBEAT`; every other code is rejected.
+/// Handles the service IOCTLs. The caller is verified first: anything but
+/// the service gets `STATUS_ACCESS_DENIED`, unknown codes get
+/// `STATUS_INVALID_DEVICE_REQUEST`.
 extern "C" fn evt_io_device_control(
     _queue: WDFQUEUE,
     request: WDFREQUEST,
@@ -256,11 +315,22 @@ extern "C" fn evt_io_device_control(
     _input_buffer_length: usize,
     io_control_code: ULONG,
 ) {
-    if io_control_code != IOCTL_OPTIC_HEARTBEAT {
-        complete(request, STATUS_INVALID_DEVICE_REQUEST, 0);
+    if !verify_caller(request) {
+        complete(request, STATUS_ACCESS_DENIED, 0);
         return;
     }
+    if io_control_code == IOCTL_OPTIC_HEARTBEAT {
+        complete_with_bytes(request, &HEARTBEAT.record_ping().to_bytes());
+    } else if io_control_code == IOCTL_OPTIC_DRIVER_STATUS {
+        complete_with_bytes(request, &HEARTBEAT.status().to_bytes());
+    } else {
+        complete(request, STATUS_INVALID_DEVICE_REQUEST, 0);
+    }
+}
 
+/// Copies `bytes` into the request's output buffer and completes it.
+/// A too-small caller buffer fails with the framework's status.
+fn complete_with_bytes(request: WDFREQUEST, bytes: &[u8]) {
     let mut buffer: PVOID = core::ptr::null_mut();
     // SAFETY: `request` is a live request owned by this callback; the out
     // pointer is valid and the optional length pointer is null.
@@ -268,7 +338,7 @@ extern "C" fn evt_io_device_control(
         call_unsafe_wdf_function_binding!(
             WdfRequestRetrieveOutputBuffer,
             request,
-            HeartbeatReply::WIRE_SIZE,
+            bytes.len(),
             &mut buffer,
             core::ptr::null_mut::<usize>(),
         )
@@ -277,17 +347,158 @@ extern "C" fn evt_io_device_control(
         complete(request, status, 0);
         return;
     }
-
-    let reply = HEARTBEAT.record_ping().to_bytes();
-    // SAFETY: WDF guarantees `buffer` is writable for at least
-    // `HeartbeatReply::WIRE_SIZE` bytes (the minimum requested above); a byte
-    // array has alignment 1, so no alignment requirement applies.
+    // SAFETY: WDF guarantees `buffer` is writable for at least `bytes.len()`
+    // bytes (the minimum requested above); `bytes` is a live Rust slice.
     unsafe {
-        buffer
-            .cast::<[u8; HeartbeatReply::WIRE_SIZE]>()
-            .write(reply)
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.cast::<u8>(), bytes.len());
+    }
+    complete(request, STATUS_SUCCESS, bytes.len() as u64);
+}
+
+/// True only when the request comes from the Optic service: a session-0
+/// (services-only) process whose short image name is `optic.exe`. Session 0
+/// is the load-bearing check: interactive processes, however named, run in
+/// session 1 and up. A renamed copy running as a service would still pass;
+/// that requires administrator rights, which is outside this check's scope
+/// (see README "Supervision design").
+fn verify_caller(request: WDFREQUEST) -> bool {
+    // SAFETY: `request` is a live request owned by this callback.
+    let pid: HANDLE =
+        unsafe { call_unsafe_wdf_function_binding!(WdfRequestGetRequestorProcessId, request) };
+    let mut process: PEPROCESS = core::ptr::null_mut();
+    // SAFETY: `pid` came from WDF; on success we own one reference, released below.
+    let status = unsafe { PsLookupProcessByProcessId(pid, &mut process) };
+    if !wdk::nt_success(status) || process.is_null() {
+        return false;
+    }
+    // SAFETY: `process` is referenced, so the object stays valid.
+    let session = unsafe { PsGetProcessSessionId(process) };
+    // SAFETY: `process` is referenced; the name buffer is valid while it is.
+    let name = unsafe { PsGetProcessImageFileName(process) };
+    // SAFETY: `name` points at the referenced process's name buffer.
+    let ok = session == 0 && unsafe { image_name_matches(name) };
+    // SAFETY: balances the reference from `PsLookupProcessByProcessId`.
+    unsafe {
+        ObfDereferenceObject(process.cast());
+    }
+    ok
+}
+
+/// Compares a `PsGetProcessImageFileName` buffer with [`SERVICE_IMAGE_NAME`],
+/// ASCII case-insensitive, requiring the NUL terminator right after.
+///
+/// # Safety
+/// `name` must point to the 16-byte buffer of a referenced process.
+unsafe fn image_name_matches(name: *const u8) -> bool {
+    let mut i = 0;
+    while i < SERVICE_IMAGE_NAME.len() {
+        // SAFETY: `i` is within the 9-byte expected name and the 16-byte buffer.
+        let actual = unsafe { *name.add(i) };
+        if actual.to_ascii_lowercase() != SERVICE_IMAGE_NAME[i] {
+            return false;
+        }
+        i += 1;
+    }
+    // SAFETY: offset 9 is inside the 16-byte buffer.
+    unsafe { *name.add(SERVICE_IMAGE_NAME.len()) == 0 }
+}
+
+/// Reads the persisted threshold-crossing count from the driver's
+/// `Parameters` registry key. Best-effort: any failure (missing key on a
+/// first install included) yields 0.
+fn read_tamper_events(driver: WDFDRIVER) -> u32 {
+    let key = match open_parameters_key(driver) {
+        Ok(key) => key,
+        Err(_) => return 0,
     };
-    complete(request, STATUS_SUCCESS, HeartbeatReply::WIRE_SIZE as u64);
+    let name = unicode_string(&REG_TAMPER_EVENTS);
+    let mut value: ULONG = 0;
+    // SAFETY: `key` is open; `name` outlives the call; `value` is a valid out pointer.
+    let status =
+        unsafe { call_unsafe_wdf_function_binding!(WdfRegistryQueryULong, key, &name, &mut value) };
+    close_key(key);
+    if wdk::nt_success(status) { value } else { 0 }
+}
+
+/// Persists the threshold-crossing count. Best-effort: failures only log.
+/// The driver handle comes from the entry-time stash because the timer path
+/// receives no driver handle of its own.
+fn persist_tamper_events(tamper_events: u32) {
+    let driver: WDFDRIVER = WDF_DRIVER_HANDLE.load(Ordering::Acquire);
+    if driver.is_null() {
+        return;
+    }
+    let key = match open_parameters_key(driver) {
+        Ok(key) => key,
+        Err(status) => {
+            println!("opticdrv: cannot open Parameters key: {status:#x}");
+            return;
+        }
+    };
+    let name = unicode_string(&REG_TAMPER_EVENTS);
+    // SAFETY: `key` is open and `name` outlives the call.
+    let status = unsafe {
+        call_unsafe_wdf_function_binding!(WdfRegistryAssignULong, key, &name, tamper_events)
+    };
+    close_key(key);
+    if !wdk::nt_success(status) {
+        println!("opticdrv: cannot persist tamper record: {status:#x}");
+    }
+}
+
+/// Opens (creating if needed) `HKLM\...\Services\opticdrv\Parameters`.
+fn open_parameters_key(driver: WDFDRIVER) -> Result<WDFKEY, NTSTATUS> {
+    let mut key: WDFKEY = core::ptr::null_mut();
+    // SAFETY: `driver` is the live entry-time handle; `key` is a valid out pointer.
+    check(unsafe {
+        call_unsafe_wdf_function_binding!(
+            WdfDriverOpenParametersRegistryKey,
+            driver,
+            KEY_READ | KEY_WRITE,
+            WDF_NO_OBJECT_ATTRIBUTES,
+            &mut key,
+        )
+    })?;
+    Ok(key)
+}
+
+/// Closes a key from [`open_parameters_key`].
+fn close_key(key: WDFKEY) {
+    // SAFETY: `key` is open and not used after this call.
+    unsafe {
+        call_unsafe_wdf_function_binding!(WdfRegistryClose, key);
+    }
+}
+
+/// Writes one `opticdrv` event-log entry for a service outage. Best-effort:
+/// allocation failure or a missing driver object silently skips the entry.
+/// The I/O manager owns (and frees) the packet after the write call.
+fn write_service_unreachable_event(unique: u32) {
+    let driver = DRIVER_OBJECT_PTR.load(Ordering::Acquire);
+    if driver.is_null() {
+        return;
+    }
+    let size = size_of::<IO_ERROR_LOG_PACKET>();
+    if size > u8::MAX as usize {
+        return;
+    }
+    // SAFETY: the driver object is valid for driver lifetime; the size fits `UCHAR`.
+    let entry = unsafe { IoAllocateErrorLogEntry(driver.cast(), size as u8) };
+    if entry.is_null() {
+        return;
+    }
+    // SAFETY: `entry` is our fresh packet; zeroing `size` bytes is exact.
+    unsafe {
+        entry.cast::<u8>().write_bytes(0, size);
+    }
+    // SAFETY: `entry` is a valid packet; the borrow ends before the write call below.
+    let packet = unsafe { &mut *entry.cast::<IO_ERROR_LOG_PACKET>() };
+    packet.ErrorCode = OPTIC_EVENT_SERVICE_UNREACHABLE;
+    packet.UniqueErrorValue = unique;
+    // SAFETY: `entry` was just allocated and filled; ownership passes to the I/O manager.
+    unsafe {
+        IoWriteErrorLogEntry(entry);
+    }
 }
 
 /// Completes `request` with `status` and `information` bytes transferred.
