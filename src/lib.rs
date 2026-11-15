@@ -138,6 +138,12 @@ fn object_attributes() -> WDF_OBJECT_ATTRIBUTES {
     }
 }
 
+/// Driver unload callback. Required by WDF for non-PnP drivers; WDF deletes the
+/// control device and timer itself, so there is nothing to release here.
+extern "C" fn evt_driver_unload(_driver: WDFDRIVER) {
+    println!("opticdrv: unloaded");
+}
+
 /// Driver entry point.
 ///
 /// # Safety
@@ -153,6 +159,9 @@ pub unsafe extern "system" fn driver_entry(
     let mut config = WDF_DRIVER_CONFIG {
         Size: wdf_struct_size::<WDF_DRIVER_CONFIG>(),
         DriverInitFlags: _WDF_DRIVER_INIT_FLAGS::WdfDriverInitNonPnpDriver as ULONG,
+        // Mandatory for non-PnP drivers: WdfDriverCreate fails with
+        // STATUS_INVALID_PARAMETER (StartService error 87) without it.
+        EvtDriverUnload: Some(evt_driver_unload),
         ..WDF_DRIVER_CONFIG::default()
     };
     let mut wdf_driver: WDFDRIVER = core::ptr::null_mut();
