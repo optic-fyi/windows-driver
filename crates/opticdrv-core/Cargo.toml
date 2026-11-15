@@ -1,0 +1,13 @@
+[package]
+name = "opticdrv-core"
+version = "0.1.0"
+edition = "2024"
+description = "Hardware-independent, no_std logic of the Optic kernel driver"
+license-file = "../../LICENSE"
+publish = false
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true

@@ -8,51 +8,29 @@
 //!
 //! It enforces nothing yet.
 
-#![cfg_attr(not(test), no_std)]
+#![no_std]
 
 extern crate alloc;
 
-#[cfg(not(test))]
 extern crate wdk_panic;
-
-mod heartbeat;
-mod ioctl;
 
 use core::mem::size_of;
 
-use heartbeat::{Heartbeat, Tick};
-use ioctl::{HEARTBEAT_INTERVAL_MS, HeartbeatReply, IOCTL_OPTIC_HEARTBEAT};
+use opticdrv_core::{
+    heartbeat::{Heartbeat, Tick},
+    ioctl::{HEARTBEAT_INTERVAL_MS, HeartbeatReply, IOCTL_OPTIC_HEARTBEAT},
+    wide::ascii_to_utf16,
+};
 use wdk::println;
-#[cfg(not(test))]
 use wdk_alloc::WdkAllocator;
 use wdk_sys::{
-    _WDF_DRIVER_INIT_FLAGS,
-    _WDF_EXECUTION_LEVEL,
-    _WDF_IO_QUEUE_DISPATCH_TYPE,
-    _WDF_SYNCHRONIZATION_SCOPE,
-    _WDF_TRI_STATE,
-    DRIVER_OBJECT,
-    NTSTATUS,
-    PCUNICODE_STRING,
-    PVOID,
-    UNICODE_STRING,
-    ULONG,
-    WDF_DRIVER_CONFIG,
-    WDF_IO_QUEUE_CONFIG,
-    WDF_NO_HANDLE,
-    WDF_NO_OBJECT_ATTRIBUTES,
-    WDF_OBJECT_ATTRIBUTES,
-    WDF_TIMER_CONFIG,
-    WDFDEVICE,
-    WDFDRIVER,
-    WDFOBJECT,
-    WDFQUEUE,
-    WDFREQUEST,
-    WDFTIMER,
-    call_unsafe_wdf_function_binding,
+    _WDF_DRIVER_INIT_FLAGS, _WDF_EXECUTION_LEVEL, _WDF_IO_QUEUE_DISPATCH_TYPE,
+    _WDF_SYNCHRONIZATION_SCOPE, _WDF_TRI_STATE, DRIVER_OBJECT, NTSTATUS, PCUNICODE_STRING, PVOID,
+    ULONG, UNICODE_STRING, WDF_DRIVER_CONFIG, WDF_IO_QUEUE_CONFIG, WDF_NO_HANDLE,
+    WDF_NO_OBJECT_ATTRIBUTES, WDF_OBJECT_ATTRIBUTES, WDF_TIMER_CONFIG, WDFDEVICE, WDFDRIVER,
+    WDFOBJECT, WDFQUEUE, WDFREQUEST, WDFTIMER, call_unsafe_wdf_function_binding,
 };
 
-#[cfg(not(test))]
 #[global_allocator]
 static GLOBAL_ALLOCATOR: WdkAllocator = WdkAllocator;
 
@@ -64,20 +42,6 @@ const STATUS_SUCCESS: NTSTATUS = 0;
 const STATUS_INVALID_DEVICE_REQUEST: NTSTATUS = -1_073_741_808;
 /// `FILE_DEVICE_SECURE_OPEN`.
 const FILE_DEVICE_SECURE_OPEN: ULONG = 0x0000_0100;
-
-/// Converts an ASCII string to UTF-16 at compile time. Panics on non-ASCII input.
-const fn ascii_to_utf16<const N: usize>(s: &str) -> [u16; N] {
-    let bytes = s.as_bytes();
-    assert!(bytes.len() == N);
-    let mut out = [0u16; N];
-    let mut i = 0;
-    while i < N {
-        assert!(bytes[i].is_ascii());
-        out[i] = bytes[i] as u16;
-        i += 1;
-    }
-    out
-}
 
 /// Declares `static $name: [u16; _]` holding `$text` as UTF-16 (no terminator).
 macro_rules! wide {
@@ -120,7 +84,7 @@ fn object_attributes() -> WDF_OBJECT_ATTRIBUTES {
 /// # Safety
 /// Called once by the kernel with a valid driver object and registry path.
 // SAFETY: "DriverEntry" is the symbol the kernel loader looks up; nothing else exports it.
-#[cfg_attr(not(test), unsafe(export_name = "DriverEntry"))]
+#[unsafe(export_name = "DriverEntry")]
 pub unsafe extern "system" fn driver_entry(
     driver: &mut DRIVER_OBJECT,
     registry_path: PCUNICODE_STRING,
@@ -185,7 +149,12 @@ fn create_control_device(driver: WDFDRIVER) -> Result<(), NTSTATUS> {
 
     // SAFETY: `init` is the non-null init structure just allocated.
     unsafe {
-        call_unsafe_wdf_function_binding!(WdfDeviceInitSetCharacteristics, init, FILE_DEVICE_SECURE_OPEN, 0u8);
+        call_unsafe_wdf_function_binding!(
+            WdfDeviceInitSetCharacteristics,
+            init,
+            FILE_DEVICE_SECURE_OPEN,
+            0u8
+        );
     }
 
     let name = unicode_string(&DEVICE_NAME);
@@ -299,7 +268,7 @@ extern "C" fn evt_io_device_control(
         call_unsafe_wdf_function_binding!(
             WdfRequestRetrieveOutputBuffer,
             request,
-            size_of::<HeartbeatReply>(),
+            HeartbeatReply::WIRE_SIZE,
             &mut buffer,
             core::ptr::null_mut::<usize>(),
         )
@@ -309,11 +278,16 @@ extern "C" fn evt_io_device_control(
         return;
     }
 
-    let reply = HEARTBEAT.record_ping();
+    let reply = HEARTBEAT.record_ping().to_bytes();
     // SAFETY: WDF guarantees `buffer` is writable for at least
-    // size_of::<HeartbeatReply>() bytes; it may be unaligned for u64, hence write_unaligned.
-    unsafe { buffer.cast::<HeartbeatReply>().write_unaligned(reply) };
-    complete(request, STATUS_SUCCESS, size_of::<HeartbeatReply>() as u64);
+    // `HeartbeatReply::WIRE_SIZE` bytes (the minimum requested above); a byte
+    // array has alignment 1, so no alignment requirement applies.
+    unsafe {
+        buffer
+            .cast::<[u8; HeartbeatReply::WIRE_SIZE]>()
+            .write(reply)
+    };
+    complete(request, STATUS_SUCCESS, HeartbeatReply::WIRE_SIZE as u64);
 }
 
 /// Completes `request` with `status` and `information` bytes transferred.

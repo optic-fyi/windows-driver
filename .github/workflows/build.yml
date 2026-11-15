@@ -2,6 +2,7 @@ name: Build
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
   # Used by release.yml, which must never publish an unsigned driver.
@@ -12,7 +13,30 @@ on:
         default: false
 
 jobs:
-  build:
+  # Job names are the required status checks of the `main` ruleset: renaming one
+  # means updating the ruleset.
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  # Everything that does not need the WDK: lints and tests of opticdrv-core.
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
+  driver:
     runs-on: windows-2025
     env:
       TARGET: x86_64-pc-windows-msvc
@@ -43,11 +67,11 @@ jobs:
         with:
           key: ${{ env.TARGET }}-wdk-${{ env.WDK_VERSION }}
 
-      - name: Test
-        run: cargo test --locked
+      - name: Clippy
+        run: cargo clippy -p opticdrv --locked --target ${{ env.TARGET }}
 
       - name: Build
-        run: cargo build --release --locked --target ${{ env.TARGET }}
+        run: cargo build -p opticdrv --release --locked --target ${{ env.TARGET }}
 
       - name: Stage opticdrv.sys
         shell: pwsh
