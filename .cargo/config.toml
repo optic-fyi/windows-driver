@@ -1,3 +1,12 @@
+# Copyright (c) 2026 Wilson Brous, Ayden Yang, Carter Alfers and Andre Hamghalam,
+# trading as Optic.fyi. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Optic-Source-Available
+#
+# Source-available, not open source. You may read this file to inspect how Optic
+# uses its kernel privileges. All other rights are reserved: no use, copying,
+# modification, redistribution, or use in a competing product without written
+# permission from the copyright holders. See the LICENSE file at the repository root.
+
 # wdk-build refuses to build without a statically linked CRT (StaticCrtNotEnabled);
 # kernel drivers cannot load vcruntime anyway.
 [target.'cfg(all(windows, target_env = "msvc"))']

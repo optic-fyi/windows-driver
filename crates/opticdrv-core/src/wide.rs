@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Wilson Brous, Ayden Yang, Carter Alfers and Andre Hamghalam,
+// trading as Optic.fyi. All rights reserved.
+// SPDX-License-Identifier: LicenseRef-Optic-Source-Available
+//
+// Source-available, not open source. You may read this file to inspect how Optic
+// uses its kernel privileges. All other rights are reserved: no use, copying,
+// modification, redistribution, or use in a competing product without written
+// permission from the copyright holders. See the LICENSE file at the repository root.
+
 //! Compile-time string conversion for kernel `UNICODE_STRING` literals.
 
 /// Converts an ASCII string to UTF-16 at compile time.
