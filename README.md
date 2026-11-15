@@ -1,6 +1,6 @@
 # opticdrv
 
-Optic's Windows kernel driver, written in Rust on KMDF ([windows-drivers-rs](https://github.com/microsoft/windows-drivers-rs)). Proprietary, see `LICENSE`.
+Optic's Windows kernel driver, written in Rust on KMDF ([windows-drivers-rs](https://github.com/microsoft/windows-drivers-rs)). Source-available, not open source: you may read it, but all other rights are reserved. See `LICENSE`.
 
 It loads, creates `\\.\OpticDrv` and supervises the Optic user-mode service over a heartbeat:
 

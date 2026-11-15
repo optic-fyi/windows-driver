@@ -1,13 +1,46 @@
+Optic Source-Available License
+
 Copyright (c) 2026 Optic.fyi. All rights reserved.
 
-This software and associated files (the "Software") are proprietary and
-confidential. No license, express or implied, is granted to any person to use,
-copy, modify, merge, publish, distribute, sublicense, reverse engineer, or sell
-the Software, in whole or in part, without the prior written permission of
-Optic.fyi.
+This is source-available software, not open-source software. The source code
+(the "Software") is published so that anyone can read it and see how Optic uses
+the privileges it holds on their computer. Publication is not a grant of the
+right to use it.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL OPTIC.FYI BE
-LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM THE USE OF THE
-SOFTWARE.
+1. Permitted: viewing. You may view, read and inspect the Software, and
+   analyze it for the purpose of security review, auditing, research and
+   understanding how Optic works. You may quote short excerpts, with
+   attribution to Optic.fyi, in discussion, review or reporting about the
+   Software. Copies made by the hosting service's own features (such as
+   viewing or forking within GitHub, under its Terms of Service) are permitted
+   for that purpose only.
+
+2. Not permitted. Without the prior written permission of Optic.fyi you may
+   not: (a) use, run or deploy the Software or any part of it; (b) copy,
+   reproduce or redistribute it, except as permitted in section 1; (c) modify
+   it or create derivative works; (d) build, compile or distribute binaries
+   from it; (e) use it, any part of it, or knowledge taken from it to develop,
+   train, or improve a product or service that competes with Optic; (f) remove
+   or alter any copyright, license or attribution notice; (g) sublicense,
+   sell, rent or otherwise commercialize it.
+
+3. Ownership. Optic.fyi owns the Software and all rights in it. No license,
+   express or implied, by estoppel or otherwise, is granted except as stated
+   in section 1. The Software being publicly accessible does not waive any
+   right.
+
+4. Termination. Any breach of this license ends the permissions in section 1
+   immediately and automatically.
+
+5. Contributions. Anything you submit to the Software is licensed to
+   Optic.fyi on a perpetual, worldwide, irrevocable, royalty-free basis,
+   including the right to sublicense and relicense it, and you confirm you
+   have the right to grant that.
+
+6. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO
+   EVENT SHALL OPTIC.FYI BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY
+   ARISING FROM THE SOFTWARE OR ITS USE.
+
+Written permission and licensing inquiries: contact Optic.fyi.

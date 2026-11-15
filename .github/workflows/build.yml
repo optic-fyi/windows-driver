@@ -1,3 +1,11 @@
+# Copyright (c) 2026 Optic.fyi. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Optic-Source-Available
+#
+# Source-available, not open source. You may read this file to inspect how Optic
+# uses its kernel privileges. All other rights are reserved: no use, copying,
+# modification, redistribution, or use in a competing product without written
+# permission from Optic.fyi. See the LICENSE file at the repository root.
+
 name: Build
 
 on:
@@ -23,6 +31,17 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all --check
+
+      # The license is only enforceable per file if it travels with the file: every
+      # source and config file must carry the Optic source-available header.
+      - name: Check license headers
+        run: |
+          fail=0
+          for f in $(git ls-files '*.rs' '*.toml' '*.yml'); do
+            head -3 "$f" | grep -q 'SPDX-License-Identifier: LicenseRef-Optic-Source-Available' \
+              || { echo "::error file=$f::missing license header"; fail=1; }
+          done
+          exit $fail
 
   # Everything that does not need the WDK: lints and tests of opticdrv-core.
   core:
