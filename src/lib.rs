@@ -138,6 +138,17 @@ fn object_attributes() -> WDF_OBJECT_ATTRIBUTES {
     }
 }
 
+/// [`object_attributes`] with callbacks forced to run at `PASSIVE_LEVEL`.
+///
+/// Contract: the parent chain must also be passive-level (a passive child of a
+/// dispatch-level parent is rejected by the framework).
+fn passive_object_attributes() -> WDF_OBJECT_ATTRIBUTES {
+    WDF_OBJECT_ATTRIBUTES {
+        ExecutionLevel: _WDF_EXECUTION_LEVEL::WdfExecutionLevelPassive,
+        ..object_attributes()
+    }
+}
+
 /// Driver unload callback. Required by WDF for non-PnP drivers; WDF deletes the
 /// control device and timer itself, so there is nothing to release here.
 extern "C" fn evt_driver_unload(_driver: WDFDRIVER) {
@@ -239,13 +250,17 @@ fn create_control_device(driver: WDFDRIVER) -> Result<(), NTSTATUS> {
     })?;
 
     let mut device: WDFDEVICE = core::ptr::null_mut();
-    // SAFETY: `init` is valid (the framework consumes it on success or failure)
-    // and `device` is a valid out pointer.
+    // Passive execution level: the IOCTL handler queries process image names and the
+    // watchdog timer writes the registry; both are illegal above PASSIVE_LEVEL. The
+    // queue and timer inherit this level from the device.
+    let mut device_attributes = passive_object_attributes();
+    // SAFETY: `init` is valid (the framework consumes it on success or failure),
+    // `device_attributes` is initialised and `device` is a valid out pointer.
     check(unsafe {
         call_unsafe_wdf_function_binding!(
             WdfDeviceCreate,
             &raw mut init,
-            WDF_NO_OBJECT_ATTRIBUTES,
+            &raw mut device_attributes,
             &raw mut device,
         )
     })?;
@@ -283,7 +298,7 @@ fn create_control_device(driver: WDFDRIVER) -> Result<(), NTSTATUS> {
         AutomaticSerialization: 0,
         ..WDF_TIMER_CONFIG::default()
     };
-    let mut timer_attributes = object_attributes();
+    let mut timer_attributes = passive_object_attributes();
     timer_attributes.ParentObject = device as WDFOBJECT;
     let mut timer: WDFTIMER = core::ptr::null_mut();
     // SAFETY: configs are initialised, the parent is the live device, `timer` is a valid out pointer.
