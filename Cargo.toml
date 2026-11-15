@@ -1,0 +1,37 @@
+[package]
+name = "opticdrv"
+version = "0.1.0"
+edition = "2024"
+description = "Optic kernel driver (KMDF, Rust)"
+license-file = "LICENSE"
+publish = false
+
+[package.metadata.wdk.driver-model]
+driver-type = "KMDF"
+kmdf-version-major = 1
+target-kmdf-version-minor = 33
+
+[lib]
+crate-type = ["cdylib"]
+
+[build-dependencies]
+wdk-build = "0.6.0"
+
+[dependencies]
+wdk = "0.5.0"
+wdk-alloc = "0.4.2"
+wdk-panic = "0.5.0"
+wdk-sys = "0.5.2"
+
+[dev-dependencies]
+wdk-sys = { version = "0.5.2", features = ["test-stubs"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+lto = true
+panic = "abort"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "forbid"

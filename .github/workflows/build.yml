@@ -1,0 +1,67 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2025
+    env:
+      TARGET: x86_64-pc-windows-msvc
+      WDK_VERSION: 10.0.22621
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Windows SDK and WDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # 22621's SDK installer overflows the log path winget appends; '/q' avoids that.
+          winget install --id "Microsoft.WindowsSDK.$env:WDK_VERSION" --exact --silent --accept-package-agreements --accept-source-agreements --override '/q'
+          winget install --id "Microsoft.WindowsWDK.$env:WDK_VERSION" --exact --silent --accept-package-agreements --accept-source-agreements
+          clang --version
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ env.TARGET }}
+
+      - name: Stage opticdrv.sys
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "target/$env:TARGET/release/opticdrv.dll" dist/opticdrv.sys
+          Copy-Item optic-driver-test.cer dist/
+
+      # Same certificate every run: it comes from the repo secrets, never generated here.
+      # Fork PRs have no secrets, so they get an unsigned driver.
+      - name: Sign opticdrv.sys
+        shell: pwsh
+        env:
+          PFX_BASE64: ${{ secrets.DRIVER_SIGNING_PFX_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.DRIVER_SIGNING_PFX_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:PFX_BASE64) { Write-Warning 'No signing secrets; leaving driver unsigned.'; exit 0 }
+          $pfx = Join-Path $env:RUNNER_TEMP 'optic-driver-test.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_BASE64))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName | Select-Object -Last 1
+          & $signtool.FullName sign /fd SHA256 /f $pfx /p $env:PFX_PASSWORD /tr http://timestamp.digicert.com /td SHA256 dist/opticdrv.sys
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed: $LASTEXITCODE" }
+          Remove-Item $pfx
+          $sig = Get-AuthenticodeSignature dist/opticdrv.sys
+          $expected = (New-Object Security.Cryptography.X509Certificates.X509Certificate2 (Resolve-Path optic-driver-test.cer)).Thumbprint
+          if ($sig.SignerCertificate.Thumbprint -ne $expected) { throw "Signed with unexpected certificate $($sig.SignerCertificate.Thumbprint)" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opticdrv
+          path: dist/

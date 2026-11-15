@@ -1,2 +1,3 @@
-opticdrv/packages/
-opticdrv/x64/
+target/
+*.pfx
+*.sys
