@@ -56,7 +56,7 @@ jobs:
       # Only the WDK-owned directories (the SDK ships with the image). A hit skips the
       # winget download/install below; a miss installs and saves them for next time.
       - name: Cache WDK
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             C:\Program Files (x86)\Windows Kits\10\Include\${{ env.WDK_VERSION }}.0\km
