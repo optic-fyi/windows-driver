@@ -139,7 +139,8 @@ pub unsafe extern "system" fn driver_entry(
     driver: &mut DRIVER_OBJECT,
     registry_path: PCUNICODE_STRING,
 ) -> NTSTATUS {
-    DRIVER_OBJECT_PTR.store(driver as *mut DRIVER_OBJECT, Ordering::Release);
+    let driver_ptr: *mut DRIVER_OBJECT = driver;
+    DRIVER_OBJECT_PTR.store(driver_ptr, Ordering::Release);
     let mut config = WDF_DRIVER_CONFIG {
         Size: wdf_struct_size::<WDF_DRIVER_CONFIG>(),
         DriverInitFlags: _WDF_DRIVER_INIT_FLAGS::WdfDriverInitNonPnpDriver as ULONG,
@@ -152,7 +153,7 @@ pub unsafe extern "system" fn driver_entry(
     let status = unsafe {
         call_unsafe_wdf_function_binding!(
             WdfDriverCreate,
-            driver as *mut DRIVER_OBJECT,
+            driver_ptr,
             registry_path,
             WDF_NO_OBJECT_ATTRIBUTES,
             &raw mut config,
@@ -309,7 +310,7 @@ extern "C" fn evt_watchdog_timer(_timer: WDFTIMER) {
             tamper_events,
         } => {
             println!(
-                "opticdrv: heartbeat #{sequence}: service UNREACHABLE                  ({missed_total} misses, tamper record #{tamper_events})"
+                "opticdrv: heartbeat #{sequence}: service UNREACHABLE ({missed_total} misses, tamper record #{tamper_events})"
             );
             persist_tamper_events(tamper_events);
             // Saturating: the event id only needs to be unique-ish, and a
