@@ -12,6 +12,10 @@ on:
         type: boolean
         default: false
 
+env:
+  # Zero warnings is a merge requirement: every job fails on any rustc or clippy warning.
+  RUSTFLAGS: -D warnings
+
 jobs:
   # Job names are the required status checks of the `main` ruleset: renaming one
   # means updating the ruleset.
@@ -68,7 +72,7 @@ jobs:
           key: ${{ env.TARGET }}-wdk-${{ env.WDK_VERSION }}
 
       - name: Clippy
-        run: cargo clippy -p opticdrv --locked --target ${{ env.TARGET }}
+        run: cargo clippy -p opticdrv --locked --target ${{ env.TARGET }} -- -D warnings
 
       - name: Build
         run: cargo build -p opticdrv --release --locked --target ${{ env.TARGET }}

@@ -31,10 +31,7 @@ use core::{
 
 use opticdrv_core::{
     heartbeat::{Heartbeat, Tick},
-    ioctl::{
-        DriverStatus, HEARTBEAT_INTERVAL_MS, HeartbeatReply, IOCTL_OPTIC_DRIVER_STATUS,
-        IOCTL_OPTIC_HEARTBEAT,
-    },
+    ioctl::{HEARTBEAT_INTERVAL_MS, IOCTL_OPTIC_DRIVER_STATUS, IOCTL_OPTIC_HEARTBEAT},
     wide::ascii_to_utf16,
 };
 use wdk::println;
@@ -110,10 +107,22 @@ fn unicode_string(buffer: &'static [u16]) -> UNICODE_STRING {
     }
 }
 
+/// The `Size` field WDF expects for a config struct. Every WDF struct is far
+/// below `ULONG::MAX` bytes; the assert proves it at compile time, so the
+/// cast below cannot truncate. (This is the pattern from Microsoft's own
+/// `sample-kmdf-driver`: clippy cannot evaluate the assert, hence the allow.)
+#[allow(clippy::cast_possible_truncation)]
+const fn wdf_struct_size<T>() -> ULONG {
+    const {
+        assert!(size_of::<T>() <= ULONG::MAX as usize);
+    }
+    size_of::<T>() as ULONG
+}
+
 /// `WDF_OBJECT_ATTRIBUTES_INIT` (an inline function in the headers, so not bound).
 fn object_attributes() -> WDF_OBJECT_ATTRIBUTES {
     WDF_OBJECT_ATTRIBUTES {
-        Size: size_of::<WDF_OBJECT_ATTRIBUTES>() as ULONG,
+        Size: wdf_struct_size::<WDF_OBJECT_ATTRIBUTES>(),
         ExecutionLevel: _WDF_EXECUTION_LEVEL::WdfExecutionLevelInheritFromParent,
         SynchronizationScope: _WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeInheritFromParent,
         ..WDF_OBJECT_ATTRIBUTES::default()
@@ -132,7 +141,7 @@ pub unsafe extern "system" fn driver_entry(
 ) -> NTSTATUS {
     DRIVER_OBJECT_PTR.store(driver as *mut DRIVER_OBJECT, Ordering::Release);
     let mut config = WDF_DRIVER_CONFIG {
-        Size: size_of::<WDF_DRIVER_CONFIG>() as ULONG,
+        Size: wdf_struct_size::<WDF_DRIVER_CONFIG>(),
         DriverInitFlags: _WDF_DRIVER_INIT_FLAGS::WdfDriverInitNonPnpDriver as ULONG,
         ..WDF_DRIVER_CONFIG::default()
     };
@@ -146,8 +155,8 @@ pub unsafe extern "system" fn driver_entry(
             driver as *mut DRIVER_OBJECT,
             registry_path,
             WDF_NO_OBJECT_ATTRIBUTES,
-            &mut config,
-            &mut wdf_driver,
+            &raw mut config,
+            &raw mut wdf_driver,
         )
     };
     if !wdk::nt_success(status) {
@@ -187,8 +196,9 @@ fn check(status: NTSTATUS) -> Result<(), NTSTATUS> {
 fn create_control_device(driver: WDFDRIVER) -> Result<(), NTSTATUS> {
     let sddl = unicode_string(&DEVICE_SDDL);
     // SAFETY: `driver` is the handle returned by WdfDriverCreate; `sddl` outlives the call.
-    let mut init =
-        unsafe { call_unsafe_wdf_function_binding!(WdfControlDeviceInitAllocate, driver, &sddl) };
+    let mut init = unsafe {
+        call_unsafe_wdf_function_binding!(WdfControlDeviceInitAllocate, driver, &raw const sddl)
+    };
     if init.is_null() {
         return Err(-1_073_741_670); // STATUS_INSUFFICIENT_RESOURCES (0xC000009A)
     }
@@ -205,7 +215,9 @@ fn create_control_device(driver: WDFDRIVER) -> Result<(), NTSTATUS> {
 
     let name = unicode_string(&DEVICE_NAME);
     // SAFETY: `init` is valid and `name` outlives the call.
-    check(unsafe { call_unsafe_wdf_function_binding!(WdfDeviceInitAssignName, init, &name) })?;
+    check(unsafe {
+        call_unsafe_wdf_function_binding!(WdfDeviceInitAssignName, init, &raw const name)
+    })?;
 
     let mut device: WDFDEVICE = core::ptr::null_mut();
     // SAFETY: `init` is valid (the framework consumes it on success or failure)
@@ -213,20 +225,20 @@ fn create_control_device(driver: WDFDRIVER) -> Result<(), NTSTATUS> {
     check(unsafe {
         call_unsafe_wdf_function_binding!(
             WdfDeviceCreate,
-            &mut init,
+            &raw mut init,
             WDF_NO_OBJECT_ATTRIBUTES,
-            &mut device,
+            &raw mut device,
         )
     })?;
 
     let symlink = unicode_string(&SYMLINK_NAME);
     // SAFETY: `device` was just created; `symlink` outlives the call.
     check(unsafe {
-        call_unsafe_wdf_function_binding!(WdfDeviceCreateSymbolicLink, device, &symlink)
+        call_unsafe_wdf_function_binding!(WdfDeviceCreateSymbolicLink, device, &raw const symlink)
     })?;
 
     let mut queue_config = WDF_IO_QUEUE_CONFIG {
-        Size: size_of::<WDF_IO_QUEUE_CONFIG>() as ULONG,
+        Size: wdf_struct_size::<WDF_IO_QUEUE_CONFIG>(),
         DispatchType: _WDF_IO_QUEUE_DISPATCH_TYPE::WdfIoQueueDispatchParallel,
         PowerManaged: _WDF_TRI_STATE::WdfUseDefault,
         DefaultQueue: 1,
@@ -239,14 +251,14 @@ fn create_control_device(driver: WDFDRIVER) -> Result<(), NTSTATUS> {
         call_unsafe_wdf_function_binding!(
             WdfIoQueueCreate,
             device,
-            &mut queue_config,
+            &raw mut queue_config,
             WDF_NO_OBJECT_ATTRIBUTES,
             WDF_NO_HANDLE.cast::<WDFQUEUE>(),
         )
     })?;
 
     let mut timer_config = WDF_TIMER_CONFIG {
-        Size: size_of::<WDF_TIMER_CONFIG>() as ULONG,
+        Size: wdf_struct_size::<WDF_TIMER_CONFIG>(),
         EvtTimerFunc: Some(evt_watchdog_timer),
         Period: HEARTBEAT_INTERVAL_MS,
         AutomaticSerialization: 0,
@@ -259,18 +271,17 @@ fn create_control_device(driver: WDFDRIVER) -> Result<(), NTSTATUS> {
     check(unsafe {
         call_unsafe_wdf_function_binding!(
             WdfTimerCreate,
-            &mut timer_config,
-            &mut timer_attributes,
-            &mut timer,
+            &raw mut timer_config,
+            &raw mut timer_attributes,
+            &raw mut timer,
         )
     })?;
 
     // Relative due time: negative, in 100 ns units.
     let due_time = -i64::from(HEARTBEAT_INTERVAL_MS) * 10_000;
-    // SAFETY: `timer` was just created.
-    unsafe {
-        call_unsafe_wdf_function_binding!(WdfTimerStart, timer, due_time);
-    }
+    // SAFETY: `timer` was just created. A fresh timer is never already
+    // running; the return only matters when restarting a live timer.
+    let _was_running = unsafe { call_unsafe_wdf_function_binding!(WdfTimerStart, timer, due_time) };
 
     // SAFETY: `device` is fully configured; this opens it to I/O.
     unsafe {
@@ -301,7 +312,9 @@ extern "C" fn evt_watchdog_timer(_timer: WDFTIMER) {
                 "opticdrv: heartbeat #{sequence}: service UNREACHABLE                  ({missed_total} misses, tamper record #{tamper_events})"
             );
             persist_tamper_events(tamper_events);
-            write_service_unreachable_event(sequence as u32);
+            // Saturating: the event id only needs to be unique-ish, and a
+            // sequence past u32::MAX must not wrap onto an earlier one.
+            write_service_unreachable_event(u32::try_from(sequence).unwrap_or(u32::MAX));
         }
     }
 }
@@ -340,7 +353,7 @@ fn complete_with_bytes(request: WDFREQUEST, bytes: &[u8]) {
             WdfRequestRetrieveOutputBuffer,
             request,
             bytes.len(),
-            &mut buffer,
+            &raw mut buffer,
             core::ptr::null_mut::<usize>(),
         )
     };
@@ -369,13 +382,13 @@ fn verify_caller(request: WDFREQUEST) -> bool {
     let mut process: PEPROCESS = core::ptr::null_mut();
     let pid_handle: HANDLE = pid as HANDLE;
     // SAFETY: `pid` came from WDF; on success we own one reference, released below.
-    let status = unsafe { PsLookupProcessByProcessId(pid_handle, &mut process) };
+    let status = unsafe { PsLookupProcessByProcessId(pid_handle, &raw mut process) };
     if !wdk::nt_success(status) || process.is_null() {
         return false;
     }
     let mut image_name: PUNICODE_STRING = core::ptr::null_mut();
     // SAFETY: `process` is referenced; on success we own the string, freed below.
-    let status = unsafe { SeLocateProcessImageName(process, &mut image_name) };
+    let status = unsafe { SeLocateProcessImageName(process, &raw mut image_name) };
     // SAFETY: `image_name` is either null or the owned string from the call above.
     let ok = wdk::nt_success(status) && unsafe { image_path_matches(image_name) };
     if !image_name.is_null() {
@@ -424,15 +437,20 @@ unsafe fn image_path_matches(name: PUNICODE_STRING) -> bool {
 /// `Parameters` registry key. Best-effort: any failure (missing key on a
 /// first install included) yields 0.
 fn read_tamper_events(driver: WDFDRIVER) -> u32 {
-    let key = match open_parameters_key(driver) {
-        Ok(key) => key,
-        Err(_) => return 0,
+    let Ok(key) = open_parameters_key(driver) else {
+        return 0;
     };
     let name = unicode_string(&REG_TAMPER_EVENTS);
     let mut value: ULONG = 0;
     // SAFETY: `key` is open; `name` outlives the call; `value` is a valid out pointer.
-    let status =
-        unsafe { call_unsafe_wdf_function_binding!(WdfRegistryQueryULong, key, &name, &mut value) };
+    let status = unsafe {
+        call_unsafe_wdf_function_binding!(
+            WdfRegistryQueryULong,
+            key,
+            &raw const name,
+            &raw mut value
+        )
+    };
     close_key(key);
     if wdk::nt_success(status) { value } else { 0 }
 }
@@ -445,17 +463,21 @@ fn persist_tamper_events(tamper_events: u32) {
     if driver.is_null() {
         return;
     }
-    let key = match open_parameters_key(driver) {
-        Ok(key) => key,
-        Err(status) => {
-            println!("opticdrv: cannot open Parameters key: {status:#x}");
-            return;
-        }
+    let key = open_parameters_key(driver).inspect_err(|status| {
+        println!("opticdrv: cannot open Parameters key: {status:#x}");
+    });
+    let Ok(key) = key else {
+        return;
     };
     let name = unicode_string(&REG_TAMPER_EVENTS);
     // SAFETY: `key` is open and `name` outlives the call.
     let status = unsafe {
-        call_unsafe_wdf_function_binding!(WdfRegistryAssignULong, key, &name, tamper_events)
+        call_unsafe_wdf_function_binding!(
+            WdfRegistryAssignULong,
+            key,
+            &raw const name,
+            tamper_events
+        )
     };
     close_key(key);
     if !wdk::nt_success(status) {
@@ -473,7 +495,7 @@ fn open_parameters_key(driver: WDFDRIVER) -> Result<WDFKEY, NTSTATUS> {
             driver,
             KEY_READ | KEY_WRITE,
             WDF_NO_OBJECT_ATTRIBUTES,
-            &mut key,
+            &raw mut key,
         )
     })?;
     Ok(key)
@@ -495,11 +517,9 @@ fn write_service_unreachable_event(unique: u32) {
     if driver.is_null() {
         return;
     }
-    let size = size_of::<IO_ERROR_LOG_PACKET>();
-    if size > u8::MAX as usize {
+    let Ok(size_u8) = u8::try_from(size_of::<IO_ERROR_LOG_PACKET>()) else {
         return;
-    }
-    let size_u8 = size as u8;
+    };
     let driver_ptr: PVOID = driver.cast();
     // SAFETY: the driver object is valid for driver lifetime; the size fits `UCHAR`.
     let entry = unsafe { IoAllocateErrorLogEntry(driver_ptr, size_u8) };
