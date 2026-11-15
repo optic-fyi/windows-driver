@@ -1,6 +1,10 @@
 Optic Source-Available License
 
-Copyright (c) 2026 Optic.fyi. All rights reserved.
+Copyright (c) 2026 Wilson Brous, Ayden Yang, Carter Alfers and Andre Hamghalam,
+trading as Optic.fyi. All rights reserved.
+
+In this license, "Licensors" means Wilson Brous, Ayden Yang, Carter Alfers and Andre Hamghalam, jointly,
+trading as Optic.fyi, and "Optic" is that trade name.
 
 This is source-available software, not open-source software. The source code
 (the "Software") is published so that anyone can read it and see how Optic uses
@@ -15,7 +19,7 @@ right to use it.
    viewing or forking within GitHub, under its Terms of Service) are permitted
    for that purpose only.
 
-2. Not permitted. Without the prior written permission of Optic.fyi you may
+2. Not permitted. Without the prior written permission of the Licensors you may
    not: (a) use, run or deploy the Software or any part of it; (b) copy,
    reproduce or redistribute it, except as permitted in section 1; (c) modify
    it or create derivative works; (d) build, compile or distribute binaries
@@ -24,7 +28,7 @@ right to use it.
    or alter any copyright, license or attribution notice; (g) sublicense,
    sell, rent or otherwise commercialize it.
 
-3. Ownership. Optic.fyi owns the Software and all rights in it. No license,
+3. Ownership. The Licensors own the Software and all rights in it. No license,
    express or implied, by estoppel or otherwise, is granted except as stated
    in section 1. The Software being publicly accessible does not waive any
    right.
@@ -33,14 +37,14 @@ right to use it.
    immediately and automatically.
 
 5. Contributions. Anything you submit to the Software is licensed to
-   Optic.fyi on a perpetual, worldwide, irrevocable, royalty-free basis,
+   the Licensors on a perpetual, worldwide, irrevocable, royalty-free basis,
    including the right to sublicense and relicense it, and you confirm you
    have the right to grant that.
 
 6. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
    EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO
-   EVENT SHALL OPTIC.FYI BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY
+   EVENT SHALL THE LICENSORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY
    ARISING FROM THE SOFTWARE OR ITS USE.
 
-Written permission and licensing inquiries: contact Optic.fyi.
+Written permission and licensing inquiries: contact the Licensors.
