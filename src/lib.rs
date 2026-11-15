@@ -517,7 +517,8 @@ fn write_service_unreachable_event(unique: u32) {
     if driver.is_null() {
         return;
     }
-    let Ok(size_u8) = u8::try_from(size_of::<IO_ERROR_LOG_PACKET>()) else {
+    let size = size_of::<IO_ERROR_LOG_PACKET>();
+    let Ok(size_u8) = u8::try_from(size) else {
         return;
     };
     let driver_ptr: PVOID = driver.cast();
