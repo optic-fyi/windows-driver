@@ -1,0 +1,50 @@
+name: Release
+
+# Builds, signs and publishes opticdrv.sys as a GitHub release. The monorepo's
+# Windows app build downloads the latest release of this repo.
+# Only runs from main, so branch protection on main decides what can be released.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/build.yml
+    with:
+      require_signature: true
+    secrets: inherit
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: opticdrv
+          path: dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tag="v${version}-${GITHUB_SHA::7}"
+          (cd dist && sha256sum opticdrv.sys > opticdrv.sys.sha256)
+          cat dist/opticdrv.sys.sha256
+          gh release create "$tag" dist/opticdrv.sys dist/opticdrv.sys.sha256 dist/optic-driver-test.cer \
+            --target "$GITHUB_SHA" \
+            --title "opticdrv $tag" \
+            --notes "Driver built from ${GITHUB_SHA}, signed with the Optic test certificate (public part: optic-driver-test.cer, \`sha256sum -c opticdrv.sys.sha256\` to verify)."
