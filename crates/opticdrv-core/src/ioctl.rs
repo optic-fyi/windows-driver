@@ -7,8 +7,8 @@
 //!
 //! Access is restricted twice: the device ACL admits only `LocalSystem` and
 //! Administrators, and the driver additionally verifies that the calling
-//! process runs in session 0 (services only) as `optic.exe`. Anything else
-//! gets `STATUS_ACCESS_DENIED`.
+//! process runs from the installed service image. Anything else gets
+//! `STATUS_ACCESS_DENIED`.
 
 /// `FILE_DEVICE_UNKNOWN`.
 pub const FILE_DEVICE_OPTIC: u32 = 0x22;

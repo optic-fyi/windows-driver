@@ -13,7 +13,7 @@
 //!
 //! Only the service may talk to the device: the device ACL admits
 //! `LocalSystem` and Administrators, and every request is additionally
-//! checked for a session-0 caller named `optic.exe`.
+//! checked for the installed service image path.
 //!
 //! Design notes, including what this driver deliberately does NOT do, live in
 //! `README.md` ("Supervision design").
@@ -26,7 +26,7 @@ extern crate wdk_panic;
 
 use core::{
     mem::size_of,
-    sync::atomic::{AtomicPtr, Ordering},
+    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
 };
 
 use opticdrv_core::{
@@ -42,13 +42,13 @@ use wdk_alloc::WdkAllocator;
 use wdk_sys::{
     _WDF_DRIVER_INIT_FLAGS, _WDF_EXECUTION_LEVEL, _WDF_IO_QUEUE_DISPATCH_TYPE,
     _WDF_SYNCHRONIZATION_SCOPE, _WDF_TRI_STATE, DRIVER_OBJECT, HANDLE, IO_ERROR_LOG_PACKET,
-    KEY_READ, KEY_WRITE, NTSTATUS, PCUNICODE_STRING, PEPROCESS, PVOID, ULONG, UNICODE_STRING,
-    WDF_DRIVER_CONFIG, WDF_IO_QUEUE_CONFIG, WDF_NO_HANDLE, WDF_NO_OBJECT_ATTRIBUTES,
-    WDF_OBJECT_ATTRIBUTES, WDF_TIMER_CONFIG, WDFDEVICE, WDFDRIVER, WDFKEY, WDFOBJECT, WDFQUEUE,
-    WDFREQUEST, WDFTIMER, call_unsafe_wdf_function_binding,
+    KEY_READ, KEY_WRITE, NTSTATUS, PCUNICODE_STRING, PEPROCESS, PUNICODE_STRING, PVOID, ULONG,
+    UNICODE_STRING, WDF_DRIVER_CONFIG, WDF_IO_QUEUE_CONFIG, WDF_NO_HANDLE,
+    WDF_NO_OBJECT_ATTRIBUTES, WDF_OBJECT_ATTRIBUTES, WDF_TIMER_CONFIG, WDFDEVICE, WDFDRIVER,
+    WDFKEY, WDFOBJECT, WDFQUEUE, WDFREQUEST, WDFTIMER, call_unsafe_wdf_function_binding,
     ntddk::{
-        IoAllocateErrorLogEntry, IoWriteErrorLogEntry, ObfDereferenceObject,
-        PsGetProcessImageFileName, PsGetProcessSessionId, PsLookupProcessByProcessId,
+        ExFreePool, IoAllocateErrorLogEntry, IoWriteErrorLogEntry, ObfDereferenceObject,
+        PsLookupProcessByProcessId, SeLocateProcessImageName,
     },
 };
 
@@ -64,7 +64,7 @@ static DRIVER_OBJECT_PTR: AtomicPtr<DRIVER_OBJECT> = AtomicPtr::new(core::ptr::n
 
 /// The `WDFDRIVER` handle, for registry access from the timer path. Written
 /// once at entry; valid for driver lifetime.
-static WDF_DRIVER_HANDLE: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(core::ptr::null_mut());
+static WDF_DRIVER_HANDLE: AtomicUsize = AtomicUsize::new(0);
 
 const STATUS_SUCCESS: NTSTATUS = 0;
 /// `0xC0000010` as a signed `NTSTATUS`.
@@ -78,9 +78,10 @@ const FILE_DEVICE_SECURE_OPEN: ULONG = 0x0000_0100;
 /// Visible in Event Viewer under the `opticdrv` source.
 const OPTIC_EVENT_SERVICE_UNREACHABLE: NTSTATUS = 0x0000_1001;
 
-/// Short image name the service runs under. `PsGetProcessImageFileName`
-/// returns at most 15 ASCII chars plus NUL, so this must stay short.
-const SERVICE_IMAGE_NAME: &[u8; 9] = b"optic.exe";
+/// Tail of the service's NT image path. The volume prefix varies per machine
+/// (`\Device\HarddiskVolumeN\...`), so only this lowercase tail is compared,
+/// ASCII case-insensitive.
+const SERVICE_IMAGE_SUFFIX: &str = "\\program files\\optic\\optic.exe";
 
 /// Declares `static $name: [u16; _]` holding `$text` as UTF-16 (no terminator).
 macro_rules! wide {
@@ -153,7 +154,7 @@ pub unsafe extern "system" fn driver_entry(
         println!("opticdrv: WdfDriverCreate failed: {status:#x}");
         return status;
     }
-    WDF_DRIVER_HANDLE.store(wdf_driver.cast(), Ordering::Release);
+    WDF_DRIVER_HANDLE.store(wdf_driver as usize, Ordering::Release);
 
     // Best-effort: a missing key just means no outage was ever recorded.
     HEARTBEAT.seed_tamper_events(read_tamper_events(wdf_driver));
@@ -355,28 +356,33 @@ fn complete_with_bytes(request: WDFREQUEST, bytes: &[u8]) {
     complete(request, STATUS_SUCCESS, bytes.len() as u64);
 }
 
-/// True only when the request comes from the Optic service: a session-0
-/// (services-only) process whose short image name is `optic.exe`. Session 0
-/// is the load-bearing check: interactive processes, however named, run in
-/// session 1 and up. A renamed copy running as a service would still pass;
-/// that requires administrator rights, which is outside this check's scope
-/// (see README "Supervision design").
+/// True only when the request comes from the installed Optic service: the
+/// calling process's NT image path must end with [`SERVICE_IMAGE_SUFFIX`].
+/// A renamed copy elsewhere fails the path; running code from the installed
+/// image requires injecting into the service process itself. (The
+/// short-name/session-id helpers are not exposed by `wdk-sys`, so the full
+/// path query is used instead.)
 fn verify_caller(request: WDFREQUEST) -> bool {
     // SAFETY: `request` is a live request owned by this callback.
-    let pid: HANDLE =
+    let pid: u32 =
         unsafe { call_unsafe_wdf_function_binding!(WdfRequestGetRequestorProcessId, request) };
     let mut process: PEPROCESS = core::ptr::null_mut();
     // SAFETY: `pid` came from WDF; on success we own one reference, released below.
-    let status = unsafe { PsLookupProcessByProcessId(pid, &mut process) };
+    let status = unsafe { PsLookupProcessByProcessId(pid as HANDLE, &mut process) };
     if !wdk::nt_success(status) || process.is_null() {
         return false;
     }
-    // SAFETY: `process` is referenced, so the object stays valid.
-    let session = unsafe { PsGetProcessSessionId(process) };
-    // SAFETY: `process` is referenced; the name buffer is valid while it is.
-    let name = unsafe { PsGetProcessImageFileName(process) };
-    // SAFETY: `name` points at the referenced process's name buffer.
-    let ok = session == 0 && unsafe { image_name_matches(name) };
+    let mut image_name: PUNICODE_STRING = core::ptr::null_mut();
+    // SAFETY: `process` is referenced; on success we own the string, freed below.
+    let status = unsafe { SeLocateProcessImageName(process, &mut image_name) };
+    // SAFETY: `image_name` is either null or the owned string from the call above.
+    let ok = wdk::nt_success(status) && unsafe { image_path_matches(image_name) };
+    if !image_name.is_null() {
+        // SAFETY: balances the allocation from `SeLocateProcessImageName`.
+        unsafe {
+            ExFreePool(image_name.cast());
+        }
+    }
     // SAFETY: balances the reference from `PsLookupProcessByProcessId`.
     unsafe {
         ObfDereferenceObject(process.cast());
@@ -384,23 +390,33 @@ fn verify_caller(request: WDFREQUEST) -> bool {
     ok
 }
 
-/// Compares a `PsGetProcessImageFileName` buffer with [`SERVICE_IMAGE_NAME`],
-/// ASCII case-insensitive, requiring the NUL terminator right after.
+/// True when the image path ends with [`SERVICE_IMAGE_SUFFIX`], ASCII
+/// case-insensitive. A null or short path is false, never a fault.
 ///
 /// # Safety
-/// `name` must point to the 16-byte buffer of a referenced process.
-unsafe fn image_name_matches(name: *const u8) -> bool {
+/// `name` must be null or point to a valid `UNICODE_STRING`.
+unsafe fn image_path_matches(name: PUNICODE_STRING) -> bool {
+    if name.is_null() {
+        return false;
+    }
+    // SAFETY: `name` is non-null and valid by contract.
+    let length = unsafe { (*name).Length as usize / size_of::<u16>() };
+    // SAFETY: same as above; the buffer is read next, bounds-checked.
+    let buffer = unsafe { (*name).Buffer };
+    if buffer.is_null() || length < SERVICE_IMAGE_SUFFIX.len() {
+        return false;
+    }
+    let suffix = SERVICE_IMAGE_SUFFIX.as_bytes();
     let mut i = 0;
-    while i < SERVICE_IMAGE_NAME.len() {
-        // SAFETY: `i` is within the 9-byte expected name and the 16-byte buffer.
-        let actual = unsafe { *name.add(i) };
-        if actual.to_ascii_lowercase() != SERVICE_IMAGE_NAME[i] {
+    while i < suffix.len() {
+        // SAFETY: `length - suffix.len() + i < length`, inside the buffer.
+        let unit = unsafe { *buffer.add(length - suffix.len() + i) };
+        if unit >= 0x80 || unit.to_le_bytes()[0].to_ascii_lowercase() != suffix[i] {
             return false;
         }
         i += 1;
     }
-    // SAFETY: offset 9 is inside the 16-byte buffer.
-    unsafe { *name.add(SERVICE_IMAGE_NAME.len()) == 0 }
+    true
 }
 
 /// Reads the persisted threshold-crossing count from the driver's
@@ -424,7 +440,7 @@ fn read_tamper_events(driver: WDFDRIVER) -> u32 {
 /// The driver handle comes from the entry-time stash because the timer path
 /// receives no driver handle of its own.
 fn persist_tamper_events(tamper_events: u32) {
-    let driver: WDFDRIVER = WDF_DRIVER_HANDLE.load(Ordering::Acquire);
+    let driver = WDF_DRIVER_HANDLE.load(Ordering::Acquire) as WDFDRIVER;
     if driver.is_null() {
         return;
     }
