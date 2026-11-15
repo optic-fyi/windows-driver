@@ -1,0 +1,4 @@
+# wdk-build refuses to build without a statically linked CRT (StaticCrtNotEnabled);
+# kernel drivers cannot load vcruntime anyway.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
