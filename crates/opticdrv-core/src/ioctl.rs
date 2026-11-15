@@ -1,9 +1,14 @@
 //! IOCTL contract between the driver and the user-mode Optic service.
 //!
-//! The service opens `\\.\OpticDrv` (`LocalSystem` / Administrators only) and calls
-//! `DeviceIoControl(IOCTL_OPTIC_HEARTBEAT)` with no input and a
-//! [`HeartbeatReply`]-sized output buffer at least once every
-//! [`HEARTBEAT_INTERVAL_MS`].
+//! The service opens `\\.\OpticDrv` and pings
+//! [`IOCTL_OPTIC_HEARTBEAT`] at least once every [`HEARTBEAT_INTERVAL_MS`].
+//! [`IOCTL_OPTIC_DRIVER_STATUS`] reports the driver's supervision state.
+//! Neither call takes input; each fills a fixed-size output buffer.
+//!
+//! Access is restricted twice: the device ACL admits only `LocalSystem` and
+//! Administrators, and the driver additionally verifies that the calling
+//! process runs from the installed service image. Anything else gets
+//! `STATUS_ACCESS_DENIED`.
 
 /// `FILE_DEVICE_UNKNOWN`.
 pub const FILE_DEVICE_OPTIC: u32 = 0x22;
@@ -31,6 +36,14 @@ pub const fn ctl_code(device_type: u32, function: u32, method: u32, access: u32)
 pub const IOCTL_OPTIC_HEARTBEAT: u32 =
     ctl_code(FILE_DEVICE_OPTIC, 0x800, METHOD_BUFFERED, FILE_READ_ACCESS);
 
+/// Service -> driver supervision query. Output: one [`DriverStatus`]. No input.
+pub const IOCTL_OPTIC_DRIVER_STATUS: u32 =
+    ctl_code(FILE_DEVICE_OPTIC, 0x801, METHOD_BUFFERED, FILE_READ_ACCESS);
+
+/// Protocol version spoken by this driver. It rides in every [`DriverStatus`];
+/// the service must log (and distrust the counters of) any other version.
+pub const OPTIC_PROTOCOL_VERSION: u32 = 1;
+
 /// Reply to [`IOCTL_OPTIC_HEARTBEAT`].
 ///
 /// Wire format ([`HeartbeatReply::WIRE_SIZE`] bytes, little-endian):
@@ -43,15 +56,39 @@ pub struct HeartbeatReply {
     pub missed: u64,
 }
 
-/// A buffer that is not exactly [`HeartbeatReply::WIRE_SIZE`] bytes long.
+/// Status snapshot of the driver's service supervision.
+///
+/// Wire format ([`DriverStatus::WIRE_SIZE`] bytes, little-endian):
+/// `version: u32` at offset 0, `tamper_events: u32` at offset 4,
+/// `sequence: u64` at offset 8, `missed_total: u64` at offset 16.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DriverStatus {
+    /// [`OPTIC_PROTOCOL_VERSION`] of the answering driver.
+    pub version: u32,
+    /// Threshold crossings recorded (lifetime total, survives reboots).
+    pub tamper_events: u32,
+    /// Watchdog ticks since the driver loaded.
+    pub sequence: u64,
+    /// Total ticks since load in which no ping arrived.
+    pub missed_total: u64,
+}
+
+/// A buffer whose length does not match the expected wire size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WrongLength {
     /// The length that was supplied.
     pub actual: usize,
 }
 
+/// Reads the little-endian `u32` at `at..at + 4` of a reply buffer.
+fn le_u32<const N: usize>(bytes: &[u8; N], at: usize) -> u32 {
+    let mut word = [0u8; 4];
+    word.copy_from_slice(&bytes[at..at + 4]);
+    u32::from_le_bytes(word)
+}
+
 /// Reads the little-endian `u64` at `at..at + 8` of a reply buffer.
-fn le_u64(bytes: &[u8; HeartbeatReply::WIRE_SIZE], at: usize) -> u64 {
+fn le_u64<const N: usize>(bytes: &[u8; N], at: usize) -> u64 {
     let mut word = [0u8; 8];
     word.copy_from_slice(&bytes[at..at + 8]);
     u64::from_le_bytes(word)
@@ -86,6 +123,38 @@ impl HeartbeatReply {
     }
 }
 
+impl DriverStatus {
+    /// Size of the encoded status in bytes.
+    pub const WIRE_SIZE: usize = 24;
+
+    /// Encodes the status in its wire format.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; Self::WIRE_SIZE] {
+        let mut out = [0u8; Self::WIRE_SIZE];
+        out[..4].copy_from_slice(&self.version.to_le_bytes());
+        out[4..8].copy_from_slice(&self.tamper_events.to_le_bytes());
+        out[8..16].copy_from_slice(&self.sequence.to_le_bytes());
+        out[16..].copy_from_slice(&self.missed_total.to_le_bytes());
+        out
+    }
+
+    /// Decodes a status.
+    ///
+    /// # Errors
+    /// [`WrongLength`] unless `bytes.len() == WIRE_SIZE`.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, WrongLength> {
+        let bytes: &[u8; Self::WIRE_SIZE] = bytes.try_into().map_err(|_| WrongLength {
+            actual: bytes.len(),
+        })?;
+        Ok(Self {
+            version: le_u32(bytes, 0),
+            tamper_events: le_u32(bytes, 4),
+            sequence: le_u64(bytes, 8),
+            missed_total: le_u64(bytes, 16),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,6 +165,13 @@ mod tests {
     fn heartbeat_code_matches_ctl_code_macro() {
         // CTL_CODE(0x22, 0x800, METHOD_BUFFERED, FILE_READ_ACCESS)
         assert_eq!(IOCTL_OPTIC_HEARTBEAT, 0x0022_6000);
+    }
+
+    // If this fails: the status IOCTL no longer matches what the service sends.
+    #[test]
+    fn status_code_matches_ctl_code_macro() {
+        // CTL_CODE(0x22, 0x801, METHOD_BUFFERED, FILE_READ_ACCESS)
+        assert_eq!(IOCTL_OPTIC_DRIVER_STATUS, 0x0022_6004);
     }
 
     // If this fails: an out-of-range function number silently corrupts the access bits.
@@ -128,6 +204,33 @@ mod tests {
         }
     }
 
+    // If this fails: the status layout the service parses has changed.
+    #[test]
+    fn status_encodes_fields_in_order() {
+        let bytes = DriverStatus {
+            version: 1,
+            tamper_events: 2,
+            sequence: 3,
+            missed_total: 4,
+        }
+        .to_bytes();
+        assert_eq!(bytes[..4], [1, 0, 0, 0]);
+        assert_eq!(bytes[4..8], [2, 0, 0, 0]);
+        assert_eq!(bytes[8..16], [3, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(bytes[16..], [4, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    // If this fails: malformed status buffers are accepted as valid.
+    #[test]
+    fn status_from_bytes_rejects_wrong_lengths() {
+        for len in [0, 16, 23, 25] {
+            assert_eq!(
+                DriverStatus::from_bytes(&[0u8; 32][..len]),
+                Err(WrongLength { actual: len })
+            );
+        }
+    }
+
     // If this fails: extreme counter values do not survive the wire.
     #[test]
     fn roundtrip_preserves_extreme_values() {
@@ -143,5 +246,12 @@ mod tests {
         ] {
             assert_eq!(HeartbeatReply::from_bytes(&reply.to_bytes()), Ok(reply));
         }
+        let status = DriverStatus {
+            version: u32::MAX,
+            tamper_events: u32::MAX,
+            sequence: u64::MAX,
+            missed_total: u64::MAX,
+        };
+        assert_eq!(DriverStatus::from_bytes(&status.to_bytes()), Ok(status));
     }
 }
