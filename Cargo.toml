@@ -35,7 +35,9 @@ publish = false
 [package.metadata.wdk.driver-model]
 driver-type = "KMDF"
 kmdf-version-major = 1
-target-kmdf-version-minor = 33
+# 1.27 ships with Windows 10 1809, the oldest OS the Optic app supports. 1.33 needs
+# Windows 11 22H2, so WdfVersionBind failed on older hosts (StartService error 87).
+target-kmdf-version-minor = 27
 
 [lib]
 crate-type = ["cdylib"]
